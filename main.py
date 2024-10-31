@@ -20,9 +20,8 @@ def menu():
     print("\n--- Cliente de Controle de LED ---")
     print("1. Acender o LED")
     print("2. Apagar o LED")
-    print("3. Fazer o LED piscar")
-    print("4. Status do botão")
-    print("5. Sair")
+    print("3. Status do botão")
+    print("4. Sair")
 
     escolha = input("Escolha uma opção: ")
     return escolha
