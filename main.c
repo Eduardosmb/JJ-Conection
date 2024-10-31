@@ -17,34 +17,24 @@
 #define PORTA 8080
 #define BUFFER_SIZE 1024
 
-/* Definições de mapeamento de memória para GPIOs */
-#define GPIO0_PHYS_ADDR 0xFF708000
-#define GPIO1_PHYS_ADDR 0xFF709000
-#define GPIO2_PHYS_ADDR 0xFF70A000
-#define GPIO_SPAN       0x1000  // Span para um GPIO (cada GPIO ocupa 0x1000 bytes)
+#define HW_REGS_BASE ( ALT_STM_OFST )
+#define HW_REGS_SPAN ( 0x04000000 )
+#define HW_REGS_MASK ( HW_REGS_SPAN - 1 )
 
-/* Definições para configuração do LED */
-#define LED_GPIO         1  // Número do GPIO ao qual o LED está conectado (0, 1 ou 2)
-#define LED_BIT          24 // Número do bit dentro do GPIO ao qual o LED está conectado (0 a 31)
+#define USER_IO_DIR     (0x01000000)
+#define BIT_LED         (0x01000000)
+#define BUTTON_MASK     (0x02000000)
 
-/* Configuração do LED: Defina como 1 se for ativo alto, 0 se for ativo baixo */
-#define LED_ATIVO_ALTO   1
 
-/* Variáveis globais para mapeamento de memória */
+int servidor_fd_global = -1;
 void *virtual_base;
 int fd;
-volatile unsigned int *gpio_direction;  // Endereço de direção do GPIO selecionado
-volatile unsigned int *gpio_data;       // Endereço de dados do GPIO selecionado
 
-/* Variável global para o socket servidor */
-int servidor_fd_global = -1;
-
-/* Função de tratamento de sinal para limpar recursos */
 void handle_signal(int signal) {
     printf("\nRecebido sinal de término. Limpando recursos...\n");
 
     /* Limpar mapeamento de memória */
-    if (munmap(virtual_base, GPIO_SPAN) != 0) {
+    if (munmap(virtual_base, HW_REGS_SPAN) != 0) {
         perror("ERROR: munmap() failed");
     }
     close(fd);
@@ -57,135 +47,38 @@ void handle_signal(int signal) {
     exit(0);
 }
 
-/* Função para configurar o GPIO selecionado como saída */
-void configurar_gpio_saida() {
-    /* Supondo que o registro de direção está no offset 0x0 */
-    // Define o bit como saída (1)
-    *gpio_direction |= (1 << LED_BIT);
-    printf("GPIO%d configurado como saída. Valor de direção: 0x%X\n", LED_GPIO, *gpio_direction);
-}
-
-/* Função para ligar o LED */
-void led_on_func() {
-    /*
-     * Dependendo da configuração do hardware:
-     * - Ativo baixo: Limpar o bit para ligar o LED.
-     * - Ativo alto: Definir o bit para ligar o LED.
-     *
-     * Ajuste a lógica abaixo conforme a configuração do seu hardware.
-     */
-
-    if (LED_ATIVO_ALTO) {
-        *gpio_data |= (1 << LED_BIT); // Define apenas o bit do LED
-        printf("LED ligado (Ativo Alto). Valor escrito no GPIO%d: 0x%X\n", LED_GPIO, *gpio_data);
-    } else {
-        *gpio_data &= ~(1 << LED_BIT); // Limpa apenas o bit do LED
-        printf("LED ligado (Ativo Baixo). Valor escrito no GPIO%d: 0x%X\n", LED_GPIO, *gpio_data);
-    }
-
-    /* Leitura e exibição do valor atual do GPIO */
-    unsigned int current_value = *gpio_data;
-    printf("Valor atual do GPIO%d após ligar: 0x%X\n", LED_GPIO, current_value);
-}
-
-/* Função para desligar o LED */
-void led_off_func() {
-    /*
-     * Dependendo da configuração do hardware:
-     * - Ativo baixo: Definir o bit para desligar o LED.
-     * - Ativo alto: Limpar o bit para desligar o LED.
-     *
-     * Ajuste a lógica abaixo conforme a configuração do seu hardware.
-     */
-
-    if (LED_ATIVO_ALTO) {
-        *gpio_data &= ~(1 << LED_BIT); // Limpa apenas o bit do LED
-        printf("LED desligado (Ativo Alto). Valor escrito no GPIO%d: 0x%X\n", LED_GPIO, *gpio_data);
-    } else {
-        *gpio_data |= (1 << LED_BIT); // Define apenas o bit do LED
-        printf("LED desligado (Ativo Baixo). Valor escrito no GPIO%d: 0x%X\n", LED_GPIO, *gpio_data);
-    }
-
-    /* Leitura e exibição do valor atual do GPIO */
-    unsigned int current_value = *gpio_data;
-    printf("Valor atual do GPIO%d após desligar: 0x%X\n", LED_GPIO, current_value);
-}
-
-/* Função para fazer o LED piscar */
-void blink_led(int vezes, int intervalo_ms) {
-    printf("Iniciando piscar o LED %d vezes com intervalo de %d ms.\n", vezes, intervalo_ms);
-    for(int i = 0; i < vezes; i++) {
-        led_on_func();
-        usleep(intervalo_ms * 1000);
-        led_off_func();
-        usleep(intervalo_ms * 1000);
-    }
-    printf("Piscar do LED concluído.\n");
-}
 
 int main() {
-    /* Configuração do tratamento de sinal */
-    signal(SIGINT, handle_signal);
-    signal(SIGTERM, handle_signal);
+    void *virtual_base;
+	int fd;
+	uint32_t  scan_input;
+	int i;		
+	// map the address space for the LED registers into user space so we can interact with them.
+	// we'll actually map in the entire CSR span of the HPS since we want to access various registers within that span
+	if( ( fd = open( "/dev/mem", ( O_RDWR | O_SYNC ) ) ) == -1 ) {
+		printf( "ERROR: could not open \"/dev/mem\"...\n" );
+		return( 1 );
+	}
 
-    /* Verificar se o LED_GPIO está dentro do intervalo válido */
-    if (LED_GPIO < 0 || LED_GPIO > 2) {
-        fprintf(stderr, "Erro: LED_GPIO deve ser 0, 1 ou 2.\n");
-        return 1;
-    }
-
-    /* Verificar se o LED_BIT está dentro do intervalo válido */
-    if (LED_BIT < 0 || LED_BIT > 31) {
-        fprintf(stderr, "Erro: LED_BIT deve estar entre 0 e 31.\n");
-        return 1;
-    }
-
-    /* Definir o endereço físico base do GPIO selecionado */
-    uint32_t gpio_base_phys;
-    switch (LED_GPIO) {
-        case 0:
-            gpio_base_phys = GPIO0_PHYS_ADDR;
-            break;
-        case 1:
-            gpio_base_phys = GPIO1_PHYS_ADDR;
-            break;
-        case 2:
-            gpio_base_phys = GPIO2_PHYS_ADDR;
-            break;
-        default:
-            fprintf(stderr, "Erro: GPIO inválido.\n");
-            return 1;
-    }
-
-    /* Abrir o arquivo /dev/mem para mapeamento de memória */
-    if( ( fd = open( "/dev/mem", ( O_RDWR | O_SYNC ) ) ) == -1 ) {
-        perror("ERROR: could not open \"/dev/mem\"");
-        return( 1 );
-    }
-
-    /* Mapeamento de memória para o GPIO selecionado */
-    virtual_base = mmap(NULL, GPIO_SPAN, PROT_READ | PROT_WRITE, MAP_SHARED, fd, gpio_base_phys);
-
-    if( virtual_base == MAP_FAILED ) {
-        perror("ERROR: mmap() failed");
-        close( fd );
-        return( 1 );
-    }
-
-    printf("Memória mapeada para GPIO%d. Base virtual: %p\n", LED_GPIO, virtual_base);
-
-    /* Definir os endereços de direção e dados do GPIO selecionado */
-    gpio_direction = (volatile unsigned int *)(virtual_base + 0x0);  // Offset 0x0 para direção
-    gpio_data = (volatile unsigned int *)(virtual_base + 0x4);       // Offset 0x4 para dados
-
-    printf("Endereço de direção do GPIO%d mapeado para: %p\n", LED_GPIO, gpio_direction);
-    printf("Endereço de dados do GPIO%d mapeado para: %p\n", LED_GPIO, gpio_data);
-
-    /* Configurar GPIO como saída */
-    configurar_gpio_saida();
-
-    /* Inicialmente, desligar o LED */
-    led_off_func();
+	virtual_base = mmap( NULL, HW_REGS_SPAN, ( PROT_READ | PROT_WRITE ), MAP_SHARED, fd, HW_REGS_BASE );
+	
+	if( virtual_base == MAP_FAILED ) {
+		printf( "ERROR: mmap() failed...\n" );
+		close( fd );
+		return( 1 );
+	}
+	// initialize the pio controller
+	// led: set the direction of the HPS GPIO1 bits attached to LEDs to output
+	alt_setbits_word( ( virtual_base + ( ( uint32_t )( ALT_GPIO1_SWPORTA_DDR_ADDR ) & ( uint32_t )( HW_REGS_MASK ) ) ), USER_IO_DIR );
+	printf("led test\r\n");
+	printf("the led flash 2 times\r\n");
+	for(i=0;i<2;i++)
+	{
+		alt_setbits_word( ( virtual_base + ( ( uint32_t )( ALT_GPIO1_SWPORTA_DR_ADDR ) & ( uint32_t )( HW_REGS_MASK ) ) ), BIT_LED );
+		usleep(500*1000);
+		alt_clrbits_word( ( virtual_base + ( ( uint32_t )( ALT_GPIO1_SWPORTA_DR_ADDR ) & ( uint32_t )( HW_REGS_MASK ) ) ), BIT_LED );
+		usleep(500*1000);
+	}
 
     /* Configuração do socket TCP */
     int novo_socket;
@@ -248,17 +141,23 @@ int main() {
                 // Implementação futura para status
                 snprintf(resposta, sizeof(resposta), "Comando 'status' recebido. Status do LED não implementado.");
             }
-            else if (strncmp(buffer, "blink", 5) == 0) {
-                blink_led(10, 500);  // Pisca 10 vezes com intervalo de 500ms
-                snprintf(resposta, sizeof(resposta), "LED piscando 10 vezes com intervalo de 500ms.");
-            }
             else if (strncmp(buffer, "led_on", 6) == 0) {
-                led_on_func();
+		        alt_setbits_word( ( virtual_base + ( ( uint32_t )( ALT_GPIO1_SWPORTA_DR_ADDR ) & ( uint32_t )( HW_REGS_MASK ) ) ), BIT_LED );
                 snprintf(resposta, sizeof(resposta), "LED aceso.");
             }
             else if (strncmp(buffer, "led_off", 7) == 0) {
-                led_off_func();
+		        alt_clrbits_word( ( virtual_base + ( ( uint32_t )( ALT_GPIO1_SWPORTA_DR_ADDR ) & ( uint32_t )( HW_REGS_MASK ) ) ), BIT_LED );
                 snprintf(resposta, sizeof(resposta), "LED apagado.");
+            }
+
+            else if (strncmp(buffer, "button_status", 7) == 0) {
+		        scan_input = alt_read_word( ( virtual_base + ( ( uint32_t )(  ALT_GPIO1_EXT_PORTA_ADDR ) & ( uint32_t )( HW_REGS_MASK ) ) ) );		
+                if(~scan_input&BUTTON_MASK){
+                    snprintf(resposta, sizeof(resposta), "Botão pressionado");
+                }
+                else{
+                    snprintf(resposta, sizeof(resposta), "Botão não pressionado");
+                }
             }
             else {
                 snprintf(resposta, sizeof(resposta), "Comando desconhecido.");
@@ -282,7 +181,12 @@ int main() {
     }
 
     /* Limpando mapeamento de memória e fechando arquivo (nunca alcançado neste exemplo) */
-    munmap(virtual_base, GPIO_SPAN);
-    close(fd);
-    return 0;
+	// clean up our memory mapping and exit
+	if( munmap( virtual_base, HW_REGS_SPAN ) != 0 ) {
+		printf( "ERROR: munmap() failed...\n" );
+		close( fd );
+		return( 1 );
+	}	
+	close( fd );
+	return( 0 );
 }
